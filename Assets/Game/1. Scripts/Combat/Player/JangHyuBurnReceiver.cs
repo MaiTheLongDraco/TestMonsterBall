@@ -1,4 +1,5 @@
 using System.Collections;
+using Aiara.UI;
 using UnityEngine;
 
 namespace Aiara.Combat
@@ -9,6 +10,7 @@ namespace Aiara.Combat
         [Header("Damage & Health")]
         [SerializeField] private int _currentHp = 100;
         [SerializeField] private int _maxHp = 100;
+        [SerializeField] private bool _isImmortal = false;
 
         [Header("Animation")]
         [SerializeField] private Animator _animator;
@@ -20,12 +22,27 @@ namespace Aiara.Combat
         private GameObject _activeBurnVfx;
         private Rigidbody _rigidbody;
         private float _stunnedUntil;
+        private float _knockbackFlyUntil;
+        private bool _deathTriggered;
 
         public int CurrentHp => _currentHp;
         public int MaxHp => _maxHp;
-        public bool IsDead => _currentHp <= 0;
+        public bool IsDead => !_isImmortal && _currentHp <= 0;
+        public bool IsImmortal
+        {
+            get => _isImmortal;
+            set
+            {
+                _isImmortal = value;
+                if (_isImmortal && _currentHp <= 0)
+                {
+                    ResetHealth();
+                }
+            }
+        }
         public bool IsBurning => _burnCoroutine != null;
         public bool IsStunned => Time.time < _stunnedUntil;
+        public bool IsKnockbackFlying => Time.time < _knockbackFlyUntil;
 
         public event System.Action<float, float> OnHealthChanged;
 
@@ -63,15 +80,36 @@ namespace Aiara.Combat
 
         public void TakeDirectDamage(int damage)
         {
+            if (_isImmortal) return;
+            if (_currentHp <= 0) return;
+
             _currentHp = Mathf.Max(0, _currentHp - damage);
             Debug.Log($"[JangHyuBurnReceiver] Nhận trực tiếp {damage} sát thương! Còn: {_currentHp}/{_maxHp}");
             OnHealthChanged?.Invoke(_currentHp, _maxHp);
+            if (_currentHp <= 0)
+            {
+                TriggerDeathState();
+            }
+        }
+
+        private void TriggerDeathState()
+        {
+            if (_deathTriggered) return;
+            _deathTriggered = true;
+            _stunnedUntil = float.MaxValue;
+            if (_animator != null)
+            {
+                _animator.Play("Dead", 0, 0f);
+            }
+            Debug.Log("[JangHyuBurnReceiver] Player đã chết (Dead) - khóa toàn bộ input!");
         }
 
         public void ResetHealth()
         {
             _currentHp = _maxHp;
             _stunnedUntil = 0f;
+            _knockbackFlyUntil = 0f;
+            _deathTriggered = false;
             if (_burnCoroutine != null)
             {
                 StopCoroutine(_burnCoroutine);
@@ -91,13 +129,16 @@ namespace Aiara.Combat
             OnHealthChanged?.Invoke(_currentHp, _maxHp);
         }
 
-        public void ApplyKnockback(Vector3 force, float stunDuration = 3.0f, bool playKnockdown = true)
+        public void ApplyKnockback(Vector3 velocity, float stunDuration = 3.0f, bool playKnockdown = true)
         {
             _stunnedUntil = Mathf.Max(_stunnedUntil, Time.time + stunDuration);
-            if (_rigidbody != null && !_rigidbody.isKinematic)
+            _knockbackFlyUntil = Time.time + 0.55f;
+            if (_rigidbody != null)
             {
+                _rigidbody.isKinematic = false;
+                _rigidbody.useGravity = true;
                 _rigidbody.linearVelocity = Vector3.zero;
-                _rigidbody.AddForce(force, ForceMode.Impulse);
+                _rigidbody.AddForce(velocity, ForceMode.VelocityChange);
             }
 
             if (_animator != null)
@@ -140,9 +181,19 @@ namespace Aiara.Combat
             {
                 if (elapsed >= nextTick)
                 {
-                    _currentHp = Mathf.Max(0, _currentHp - damagePerTick);
-                    Debug.Log($"[JangHyuBurnReceiver] Burn Tick! HP: {_currentHp}/{_maxHp} (-{damagePerTick})");
-                    OnHealthChanged?.Invoke(_currentHp, _maxHp);
+                    if (!_isImmortal && _currentHp > 0)
+                    {
+                        _currentHp = Mathf.Max(0, _currentHp - damagePerTick);
+                        float heightOffset = IsStunned ? 0.95f : 1.65f;
+                        Vector3 popupPos = transform.position + new Vector3(UnityEngine.Random.Range(-0.22f, 0.22f), heightOffset, -0.25f);
+                        FloatingDamageText.Spawn(popupPos, damagePerTick);
+                        Debug.Log($"[JangHyuBurnReceiver] Burn Tick! HP: {_currentHp}/{_maxHp} (-{damagePerTick})");
+                        OnHealthChanged?.Invoke(_currentHp, _maxHp);
+                        if (_currentHp <= 0)
+                        {
+                            TriggerDeathState();
+                        }
+                    }
                     nextTick += tickInterval;
                 }
 

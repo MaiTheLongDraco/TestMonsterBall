@@ -37,9 +37,14 @@ namespace Aiara.Combat
 
         private void Update()
         {
-            if (_burnReceiver != null && _burnReceiver.IsStunned)
+            if (_burnReceiver != null && (_burnReceiver.IsStunned || _burnReceiver.IsDead))
             {
                 _moveInput = Vector3.zero;
+                _isDashing = false;
+                if (_rigidbody != null && !_rigidbody.isKinematic && !_burnReceiver.IsKnockbackFlying)
+                {
+                    _rigidbody.linearVelocity = new Vector3(0f, _rigidbody.linearVelocity.y, 0f);
+                }
                 UpdateAnimator(0f);
                 return;
             }
@@ -51,7 +56,7 @@ namespace Aiara.Combat
 
         private void FixedUpdate()
         {
-            if (_burnReceiver != null && _burnReceiver.IsStunned)
+            if (_burnReceiver != null && (_burnReceiver.IsStunned || _burnReceiver.IsDead))
             {
                 return;
             }

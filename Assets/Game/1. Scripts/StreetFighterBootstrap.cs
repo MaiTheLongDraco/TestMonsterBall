@@ -91,12 +91,18 @@ namespace Aiara
                 playerObj.transform.position = new Vector3(-3.2f, 0f, 0f);
                 playerObj.transform.rotation = Quaternion.Euler(0f, 90f, 0f);
 
-                // Gỡ bỏ MonsterBallAmbushController nếu bị gán nhầm
+                // Gỡ bỏ MonsterBallAmbushController & JangHyuMovementController trùng lặp nếu có
                 var wrongAmbush = playerObj.GetComponent<MonsterBallAmbushController>();
                 if (wrongAmbush != null)
                 {
                     if (isPlayMode) Object.Destroy(wrongAmbush);
                     else Object.DestroyImmediate(wrongAmbush);
+                }
+                var dupMove = playerObj.GetComponent<JangHyuMovementController>();
+                if (dupMove != null)
+                {
+                    if (isPlayMode) Object.Destroy(dupMove);
+                    else Object.DestroyImmediate(dupMove);
                 }
 
                 // Gắn AnimationEventHandler trên Player và tất cả Animator con
@@ -133,7 +139,7 @@ namespace Aiara
             if (monsterObj != null)
             {
                 try { monsterObj.tag = "Enemy"; } catch { }
-                monsterObj.transform.rotation = Quaternion.Euler(0f, 270f, 0f);
+                monsterObj.transform.rotation = Quaternion.Euler(0f, 205f, 0f);
                 monsterObj.transform.localScale = Vector3.one * 0.7f;
 
                 // Bật SkinnedMeshRenderer thân chính (Group) và ẩn mảnh vỡ (group1)

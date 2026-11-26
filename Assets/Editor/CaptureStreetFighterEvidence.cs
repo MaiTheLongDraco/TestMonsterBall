@@ -37,6 +37,7 @@ namespace Aiara.EditorTools
             EditorApplication.isPlaying = true;
         }
 
+        [MenuItem("Tools/StreetFighter/Run In-Editor Verification")]
         public static void RunInEditorVerification()
         {
             if (!Directory.Exists(OutDir))
@@ -128,7 +129,7 @@ namespace Aiara.EditorTools
             // Chờ 0.35s cho quái vật nhận diện khoảng cách <= 5.5m và phóng vọt lên đỉnh cao
             yield return new WaitForSeconds(0.35f);
             Capture("03_monster_emerge_eruption.png");
-            Debug.Log("[VerificationRunner] Đã chụp 03_monster_emerge_eruption.png");
+            Debug.Log($"[VerificationRunner] [CHECK_EMERGE_TRAIL] jumpTrail={monsterAI?.IsJumpTrailPlaying}, rollTrail={monsterAI?.IsRollTrailPlaying}");
 
             // Chờ tiếp 0.9s cho quái vật tiếp đất vững vàng Y = 0.0m, bùng cháy ngọn lửa cam vàng và hiện thanh máu 적구
             yield return new WaitForSeconds(0.90f);
@@ -144,6 +145,8 @@ namespace Aiara.EditorTools
             yield return new WaitForSeconds(0.30f);
             Capture("06_roll_hit_knockdown_burn.png");
             yield return new WaitForSeconds(0.55f);
+            yield return StartCoroutine(CaptureFrameCoroutine("06b_burn_floating_text.png"));
+            Debug.Log($"[VerificationRunner] [CHECK_BURN_DAMAGE_TEXT] activePopups={FloatingDamageText.ActiveCount}, totalSpawned={FloatingDamageText.TotalSpawnedCount}");
             float xBeforeDownedWalk = player != null ? player.transform.position.x : 0f;
             if (playerCtrl != null) playerCtrl.BotWalk(1f);
             yield return new WaitForSeconds(0.45f);
@@ -206,11 +209,11 @@ namespace Aiara.EditorTools
             {
                 monsterAI.TransitionTo(MonsterAIState.JumpSlam);
             }
-            yield return new WaitForSeconds(0.40f);
+            yield return new WaitForSeconds(0.65f);
             yield return StartCoroutine(CaptureFrameCoroutine("09_monster_jump_slam_air.png"));
             Debug.Log($"[VerificationRunner] Đã chụp 09_monster_jump_slam_air.png | state={monsterAI?.CurrentState}, monsterY={monster?.transform.position.y:F2}");
 
-            yield return new WaitForSeconds(0.46f);
+            yield return new WaitForSeconds(0.48f);
             yield return StartCoroutine(CaptureFrameCoroutine("10_monster_bomb_explosion.png"));
             var pp = CombatPostProcessController.Instance;
             Debug.Log($"[VerificationRunner] [CHECK_EXPLOSION] state={monsterAI?.CurrentState}, bloom={pp?.CurrentBloomIntensity:F2}, pulse={pp?.CurrentPulseLevel:F2}");
@@ -218,8 +221,121 @@ namespace Aiara.EditorTools
             yield return StartCoroutine(CaptureFrameCoroutine("11_monster_bomb_black_smoke.png"));
             yield return new WaitForSeconds(0.3f);
 
-            yield return new WaitForSeconds(0.5f);
-            Debug.Log("[VerificationRunner] >>> HOÀN TẤT TOÀN BỘ 8 BẰNG CHỨNG THỰC TẾ! <<<");
+            // Kiểm chứng UI: 0 ký tự tiếng Hàn & toàn bộ nút TopRight_Control_Panel / Demo Actions hoạt động thực tế
+            VerifyEnglishUIAndButtonClicks(monsterAI);
+            yield return StartCoroutine(CaptureFrameCoroutine("12_ui_english_and_demo_buttons.png"));
+            if (monster != null)
+            {
+                float yaw = monster.transform.eulerAngles.y;
+                float faceCamDot = Vector3.Dot(monster.transform.forward, -Vector3.forward);
+                Debug.Log($"[VerificationRunner] [CHECK_MONSTER_FACING] yaw={yaw:F1}deg, faceToCameraDot={faceCamDot:F2} (kỳ vọng > 0.70)");
+            }
+
+            // Test bấm trực tiếp từng nút Demo Action qua Button.onClick.Invoke()
+            var pHud = GameObject.Find("Player_HUD_Canvas");
+            if (pHud != null && monsterAI != null)
+            {
+                var aiBtn = pHud.transform.Find("TopRight_Control_Panel/AI_Checkbox_Container")?.GetComponent<UnityEngine.UI.Button>();
+                bool prevAi = monsterAI.IsAIEnabled;
+                if (prevAi && aiBtn != null) aiBtn.onClick.Invoke();
+                Debug.Log($"[VerificationRunner] [UI_CHECK] AI Toggle clicked -> IsAIEnabled={monsterAI.IsAIEnabled}");
+
+                yield return InvokeAndCheckButton(pHud, "TopRight_Control_Panel/Demo_Actions_Panel/Btn_Action_Emerge", monsterAI, MonsterAIState.Emerge, 0.3f);
+
+                // Reset vị trí chuẩn để kiểm chứng nút Roll: đứng gần ~2.2m, quái phải lùi lấy đà -> xoay tít mù -> đâm văng Player lùi ra sau!
+                if (player != null)
+                {
+                    var recvRoll = player.GetComponent<JangHyuBurnReceiver>();
+                    if (recvRoll != null) recvRoll.ResetHealth();
+                    player.transform.position = new Vector3(-2.0f, 0f, 0f);
+                }
+                if (monster != null) monster.transform.position = new Vector3(0.4f, 0f, 0f);
+                float playerXBeforeRoll = player != null ? player.transform.position.x : 0f;
+                yield return InvokeAndCheckButton(pHud, "TopRight_Control_Panel/Demo_Actions_Panel/Btn_Action_Roll", monsterAI, MonsterAIState.RollAttack, 0.42f);
+                yield return StartCoroutine(CaptureFrameCoroutine("14_ui_demo_roll_spinning.png"));
+                yield return new WaitForSeconds(0.55f);
+                yield return StartCoroutine(CaptureFrameCoroutine("15_ui_demo_roll_knockback.png"));
+                float playerXAfterRoll = player != null ? player.transform.position.x : 0f;
+                float rollKnockDist = Mathf.Abs(playerXAfterRoll - playerXBeforeRoll);
+                Debug.Log($"[VerificationRunner] [CHECK_ROLL_KNOCKBACK] beforeX={playerXBeforeRoll:F2}, afterX={playerXAfterRoll:F2}, dxKnockback={rollKnockDist:F2}m (kỳ vọng >= 1.80m)");
+                Debug.Log($"[VerificationRunner] [CHECK_TRAILS_AND_IMPACT] impactExplosions={monsterAI.ImpactExplosionsTriggered}");
+
+                yield return InvokeAndCheckButton(pHud, "TopRight_Control_Panel/Demo_Actions_Panel/Btn_Action_JumpSlam", monsterAI, MonsterAIState.JumpSlam, 0.65f);
+                yield return StartCoroutine(CaptureFrameCoroutine("13_ui_demo_jump_slam.png"));
+                yield return new WaitForSeconds(0.55f);
+                yield return InvokeAndCheckButton(pHud, "TopRight_Control_Panel/Demo_Actions_Panel/Btn_Action_Melee", monsterAI, MonsterAIState.Attack2, 0.25f);
+                yield return InvokeAndCheckButton(pHud, "TopRight_Control_Panel/Demo_Actions_Panel/Btn_Action_Groggy", monsterAI, MonsterAIState.Groggy, 0.25f);
+                yield return InvokeAndCheckButton(pHud, "TopRight_Control_Panel/Btn_Reset", monsterAI, MonsterAIState.Hidden, 0.2f);
+                yield return InvokeAndCheckButton(pHud, "TopRight_Control_Panel/Btn_Spawn", monsterAI, MonsterAIState.Emerge, 0.2f);
+
+                // Test 1: Immortal toggle -> Player bất tử không mất máu
+                var immBtn = pHud.transform.Find("TopRight_Control_Panel/Immortal_Checkbox_Container")?.GetComponent<UnityEngine.UI.Button>();
+                var pRecv = player != null ? player.GetComponent<JangHyuBurnReceiver>() : null;
+                if (immBtn != null && pRecv != null)
+                {
+                    pRecv.IsImmortal = false;
+                    pRecv.ResetHealth();
+                    immBtn.onClick.Invoke();
+                    pRecv.TakeDirectDamage(50);
+                    Debug.Log($"[VerificationRunner] [CHECK_IMMORTAL] IsImmortal={pRecv.IsImmortal}, HP={pRecv.CurrentHp}/{pRecv.MaxHp} (kỳ vọng HP=100)");
+                    immBtn.onClick.Invoke(); // Tắt Immortal lại để test Dead
+                }
+
+                // Test 2: Player chết (HP = 0) -> khóa cứng input & di chuyển
+                if (pRecv != null && playerCtrl != null)
+                {
+                    pRecv.IsImmortal = false;
+                    pRecv.TakeDirectDamage(200);
+                    yield return new WaitForSeconds(0.25f);
+                    float xDeadBefore = player.transform.position.x;
+                    playerCtrl.BotWalk(1f);
+                    playerCtrl.BotAttack();
+                    yield return new WaitForSeconds(0.35f);
+                    float xDeadAfter = player.transform.position.x;
+                    Debug.Log($"[VerificationRunner] [CHECK_DEAD_LOCK] IsDead={pRecv.IsDead}, dxWhenDead={Mathf.Abs(xDeadAfter - xDeadBefore):F3}m (kỳ vọng <= 0.05m)");
+                    pRecv.ResetHealth();
+                }
+
+                // Test 3: MonsterBall chết -> Nổ tung vùng lửa bom ở trung tâm + mảnh vỡ bắn ra + khói đen cuộn dày + nút Explode trên HUD
+                if (monsterHealth != null)
+                {
+                    yield return new WaitForSeconds(0.6f);
+                    monsterHealth.ResetHealth();
+                    monsterAI.TriggerDemoAction(MonsterAIState.CombatIdle);
+                    yield return new WaitForSeconds(0.15f);
+                    yield return InvokeAndCheckButton(pHud, "TopRight_Control_Panel/Demo_Actions_Panel/Btn_Action_Explode", monsterAI, MonsterAIState.Dead, 0.22f);
+                    yield return StartCoroutine(CaptureFrameCoroutine("16_monster_death_explosion.png"));
+                    var groupObj = monster.transform.Find("Group")?.gameObject;
+                    var group1Obj = monster.transform.Find("group1")?.gameObject;
+                    Debug.Log($"[VerificationRunner] [CHECK_MONSTER_DEATH_EXPLOSION] state={monsterAI.CurrentState}, mainBodyActive={groupObj?.activeSelf}, chunksActive={group1Obj?.activeSelf}");
+                    yield return new WaitForSeconds(0.45f);
+                    yield return StartCoroutine(CaptureFrameCoroutine("16b_monster_death_smoke.png"));
+                }
+
+                if (aiBtn != null && !monsterAI.IsAIEnabled) aiBtn.onClick.Invoke();
+
+#if UNITY_EDITOR
+                // Test 4: Quay màn hình Game View kèm âm thanh bằng GameViewRecorderSession trong 2.1s
+                if (monsterHealth != null)
+                {
+                    bool prevMute = EditorUtility.audioMasterMute;
+                    EditorUtility.audioMasterMute = false;
+                    monsterHealth.ResetHealth();
+                    if (pRecv != null) pRecv.ResetHealth();
+                    if (player != null) player.transform.position = new Vector3(-2.5f, 0f, 0f);
+                    if (monster != null) monster.transform.position = new Vector3(2.2f, 0f, 0f);
+                    monsterAI.TriggerDemoAction(MonsterAIState.JumpSlam);
+                    GameViewRecorderSession.StartRecording();
+                    yield return new WaitForSeconds(2.1f);
+                    GameViewRecorderSession.StopRecording();
+                    EditorUtility.audioMasterMute = prevMute;
+                    Debug.Log($"[VerificationRunner] [CHECK_RECORDER] relPath={GameViewRecorderSession.LastRecordedRelativePath}, frames={GameViewRecorderSession.EncodedFrames}, audioSamples={GameViewRecorderSession.EncodedAudioSamples}, summary={GameViewRecorderSession.LastRecordedSummary}");
+                }
+#endif
+            }
+
+            yield return new WaitForSeconds(0.4f);
+            Debug.Log("[VerificationRunner] >>> HOÀN TẤT TOÀN BỘ BẰNG CHỨNG THỰC TẾ & UI! <<<");
 
 #if UNITY_EDITOR
             EnabledForBatch = false;
@@ -230,6 +346,40 @@ namespace Aiara.EditorTools
             }
 #endif
             Destroy(gameObject);
+        }
+
+        private void VerifyEnglishUIAndButtonClicks(MonsterBallAIController monsterAI)
+        {
+            int koreanTextCount = 0;
+            foreach (var txt in Object.FindObjectsByType<UnityEngine.UI.Text>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            {
+                if (txt == null || string.IsNullOrEmpty(txt.text)) continue;
+                foreach (char c in txt.text)
+                {
+                    if ((c >= '\uAC00' && c <= '\uD7AF') || (c >= '\u1100' && c <= '\u11FF'))
+                    {
+                        koreanTextCount++;
+                        Debug.LogError($"[VerificationRunner] [UI_CHECK] Still found Korean text in '{txt.name}': {txt.text}");
+                        break;
+                    }
+                }
+            }
+            Debug.Log($"[VerificationRunner] [UI_CHECK] KoreanTextCount={koreanTextCount}");
+        }
+
+        private IEnumerator InvokeAndCheckButton(GameObject pHud, string path, MonsterBallAIController monsterAI, MonsterAIState expectedState, float waitSeconds)
+        {
+            var btn = pHud.transform.Find(path)?.GetComponent<UnityEngine.UI.Button>();
+            if (btn == null)
+            {
+                Debug.LogError($"[VerificationRunner] [UI_CHECK] Missing button at {path}");
+                yield break;
+            }
+            btn.onClick.Invoke();
+            var actual = monsterAI.CurrentState;
+            bool ok = actual == expectedState || (expectedState == MonsterAIState.Attack2 && (actual == MonsterAIState.Attack1 || actual == MonsterAIState.Attack2));
+            Debug.Log($"[VerificationRunner] [UI_CHECK] Click '{path}' -> State={actual} (expected={expectedState}, ok={ok})");
+            yield return new WaitForSeconds(waitSeconds);
         }
 
         private IEnumerator CaptureFrameCoroutine(string fileName)

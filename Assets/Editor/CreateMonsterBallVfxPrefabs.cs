@@ -40,7 +40,7 @@ namespace Aiara.EditorTools
             var flameMat = AssetDatabase.LoadAssetAtPath<Material>("Assets/Game/4. Rendering/Materials/VFX_FlameMat.mat");
             var smokeMat = AssetDatabase.LoadAssetAtPath<Material>("Assets/Game/4. Rendering/Materials/VFX_SmokeMat.mat");
 
-            // Chuẩn hóa VFX_FlameMat dùng uni_glow.png + Additive (đốm lửa tròn phát sáng, không ra hình tam giác)
+            // Chuẩn hóa VFX_FlameMat dùng uni_glow.png + Additive (đốm lửa tròn phát sáng, không nhân màu quá mức làm cháy trắng)
             var glowTex = AssetDatabase.LoadAssetAtPath<Texture2D>("Assets/UNI VFX/Common/Textures/uni_glow.png");
             if (flameMat != null)
             {
@@ -49,6 +49,9 @@ namespace Aiara.EditorTools
                     flameMat.SetTexture("_BaseMap", glowTex);
                     flameMat.mainTexture = glowTex;
                 }
+                flameMat.SetColor("_BaseColor", Color.white);
+                flameMat.SetColor("_Color", Color.white);
+                flameMat.SetColor("_EmissionColor", Color.black);
                 flameMat.SetFloat("_Surface", 1f);
                 flameMat.SetFloat("_Blend", 2f); // 2 = Additive
                 flameMat.SetFloat("_SrcBlend", (float)UnityEngine.Rendering.BlendMode.SrcAlpha);
@@ -62,18 +65,52 @@ namespace Aiara.EditorTools
                 EditorUtility.SetDirty(flameMat);
             }
 
-            // Chuẩn hóa VFX_SmokeMat dùng WispySmoke03b_8x8.png (khói cuộn dày mượt)
+            // Chuẩn hóa VFX_SmokeMat dùng WispySmoke03b_8x8.png + Alpha blend màu trắng gốc (không làm mờ khói đen)
             var wispySmoke = AssetDatabase.LoadAssetAtPath<Texture2D>("Assets/UNI VFX/Common/Textures/WispySmoke03b_8x8.png");
             if (smokeMat != null && wispySmoke != null)
             {
                 smokeMat.SetTexture("_BaseMap", wispySmoke);
                 smokeMat.mainTexture = wispySmoke;
+                smokeMat.SetColor("_BaseColor", Color.white);
+                smokeMat.SetColor("_Color", Color.white);
+                smokeMat.SetColor("_EmissionColor", Color.black);
                 smokeMat.SetFloat("_Surface", 1f);
                 smokeMat.SetFloat("_Blend", 0f); // Alpha blend
+                smokeMat.SetFloat("_SrcBlend", (float)UnityEngine.Rendering.BlendMode.SrcAlpha);
+                smokeMat.SetFloat("_DstBlend", (float)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+                smokeMat.SetFloat("_ZWrite", 0f);
                 smokeMat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
                 smokeMat.DisableKeyword("_ALPHAPREMULTIPLY_ON");
-                smokeMat.renderQueue = 3000;
+                smokeMat.DisableKeyword("_BLENDMODE_ADD");
+                smokeMat.renderQueue = 2990;
                 EditorUtility.SetDirty(smokeMat);
+            }
+
+            // Tạo/chuẩn hóa VFX_FirePlumeMat (Additive trên WispySmoke03b_8x8.png) để tạo ngọn lửa cuộn sắc nét cho quả bom nổ
+            string firePlumeMatPath = "Assets/Game/4. Rendering/Materials/VFX_FirePlumeMat.mat";
+            var firePlumeMat = AssetDatabase.LoadAssetAtPath<Material>(firePlumeMatPath);
+            if (firePlumeMat == null && flameMat != null)
+            {
+                firePlumeMat = new Material(flameMat);
+                AssetDatabase.CreateAsset(firePlumeMat, firePlumeMatPath);
+            }
+            if (firePlumeMat != null && wispySmoke != null)
+            {
+                if (flameMat != null) firePlumeMat.shader = flameMat.shader;
+                firePlumeMat.SetTexture("_BaseMap", wispySmoke);
+                firePlumeMat.mainTexture = wispySmoke;
+                firePlumeMat.SetColor("_BaseColor", Color.white);
+                firePlumeMat.SetColor("_Color", Color.white);
+                firePlumeMat.SetColor("_EmissionColor", Color.black);
+                firePlumeMat.SetFloat("_Surface", 1f);
+                firePlumeMat.SetFloat("_Blend", 2f);
+                firePlumeMat.SetFloat("_SrcBlend", (float)UnityEngine.Rendering.BlendMode.SrcAlpha);
+                firePlumeMat.SetFloat("_DstBlend", (float)UnityEngine.Rendering.BlendMode.One);
+                firePlumeMat.SetFloat("_ZWrite", 0f);
+                firePlumeMat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+                firePlumeMat.EnableKeyword("_BLENDMODE_ADD");
+                firePlumeMat.renderQueue = 3010;
+                EditorUtility.SetDirty(firePlumeMat);
             }
 
             // Chuẩn hóa VFX_DebrisMat cho 3D Mesh sỏi đá
@@ -88,21 +125,11 @@ namespace Aiara.EditorTools
                 EditorUtility.SetDirty(debrisMat);
             }
 
-            // Đảm bảo VFX_SmokeMat có texture Smoke55 nếu cần dùng trực tiếp
-            var customSmokeMat = AssetDatabase.LoadAssetAtPath<Material>("Assets/Game/4. Rendering/Materials/VFX_SmokeMat.mat");
-            var smoke55 = AssetDatabase.LoadAssetAtPath<Texture2D>("Assets/FEY/Textures/SmokeAndExpTextures/Smoke_Textures/Smoke55.png");
-            if (customSmokeMat != null && smoke55 != null)
-            {
-                customSmokeMat.SetTexture("_BaseMap", smoke55);
-                customSmokeMat.mainTexture = smoke55;
-                EditorUtility.SetDirty(customSmokeMat);
-            }
-
             BuildGroundCrackPrefab(crackMat, smokeMat);
             BuildGroundEruptPrefab(smokeMat, debrisMat, flameMat);
             BuildRollTrailPrefab(smokeMat, flameMat);
             BuildJumpTrailPrefab(smokeMat, flameMat);
-            BuildBombExplosionPrefab(smokeMat, debrisMat, flameMat);
+            BuildBombExplosionPrefab(smokeMat, debrisMat, flameMat, firePlumeMat ?? flameMat);
             BuildCleanFlamePrefab(flameMat);
 
             AssetDatabase.SaveAssets();
@@ -298,6 +325,53 @@ namespace Aiara.EditorTools
             SaveAndDestroy(root, path);
         }
 
+        private static void AddFlameTrailEmitter(
+            GameObject root, Material flameMat, string name, Vector3 localPos,
+            float rateOverTime, float rateOverDistance, float minSize, float maxSize, float radius)
+        {
+            var fireGo = new GameObject(name);
+            fireGo.transform.SetParent(root.transform, false);
+            fireGo.transform.localPosition = localPos;
+            var psFire = fireGo.AddComponent<ParticleSystem>();
+            var mFire = psFire.main;
+            mFire.duration = 1.0f;
+            mFire.loop = true;
+            mFire.startLifetime = new ParticleSystem.MinMaxCurve(0.28f, 0.52f);
+            mFire.startSpeed = new ParticleSystem.MinMaxCurve(0.35f, 1.4f);
+            mFire.startSize = new ParticleSystem.MinMaxCurve(minSize, maxSize);
+            mFire.startColor = new ParticleSystem.MinMaxGradient(new Color(3.2f, 1.15f, 0.2f, 0.95f));
+            mFire.gravityModifier = -0.35f;
+            mFire.simulationSpace = ParticleSystemSimulationSpace.World;
+
+            var eFire = psFire.emission;
+            eFire.rateOverTime = rateOverTime;
+            eFire.rateOverDistance = rateOverDistance;
+
+            var sFire = psFire.shape;
+            sFire.shapeType = ParticleSystemShapeType.Sphere;
+            sFire.radius = radius;
+
+            var solFire = psFire.sizeOverLifetime;
+            solFire.enabled = true;
+            solFire.size = new ParticleSystem.MinMaxCurve(1f, AnimationCurve.Linear(0f, 1.0f, 1f, 0.15f));
+
+            var colFire = psFire.colorOverLifetime;
+            colFire.enabled = true;
+            var gradFire = new Gradient();
+            gradFire.SetKeys(
+                new[] {
+                    new GradientColorKey(new Color(1f, 0.85f, 0.25f), 0f),
+                    new GradientColorKey(new Color(1f, 0.35f, 0.05f), 0.55f),
+                    new GradientColorKey(new Color(0.55f, 0.06f, 0.01f), 1f)
+                },
+                new[] { new GradientAlphaKey(0.95f, 0f), new GradientAlphaKey(0.75f, 0.45f), new GradientAlphaKey(0f, 1f) }
+            );
+            colFire.color = gradFire;
+
+            var psrFire = fireGo.GetComponent<ParticleSystemRenderer>();
+            if (psrFire != null && flameMat != null) psrFire.sharedMaterial = flameMat;
+        }
+
         private static void BuildRollTrailPrefab(Material smokeMat, Material flameMat)
         {
             string path = TargetDir + "/VFX_RollTrail_Complete.prefab";
@@ -377,6 +451,9 @@ namespace Aiara.EditorTools
 
             var psrSpark = sparkGo.GetComponent<ParticleSystemRenderer>();
             if (psrSpark != null && flameMat != null) psrSpark.sharedMaterial = flameMat;
+
+            // 3. Trail lửa cam đỏ bùng cháy dọc đường di chuyển / lăn
+            AddFlameTrailEmitter(root, flameMat, "Roll_FlameTrail", new Vector3(0f, 0.42f, 0f), 26f, 14f, 0.55f, 1.05f, 0.38f);
 
             SaveAndDestroy(root, path);
         }
@@ -545,83 +622,91 @@ namespace Aiara.EditorTools
             var psrSpark = sparkGo.GetComponent<ParticleSystemRenderer>();
             if (psrSpark != null && flameMat != null) psrSpark.sharedMaterial = flameMat;
 
+            // Trail lửa cam vàng rực rỡ kết hợp cùng vệt khói đen khi nhảy
+            AddFlameTrailEmitter(root, flameMat, "Jump_FlameTrail", new Vector3(0f, 0.1f, 0f), 30f, 16f, 0.65f, 1.25f, 0.45f);
+
             SaveAndDestroy(root, path);
         }
 
-        private static void BuildBombExplosionPrefab(Material smokeMat, Material debrisMat, Material flameMat)
+        private static void BuildBombExplosionPrefab(Material smokeMat, Material debrisMat, Material flameMat, Material firePlumeMat)
         {
             string path = TargetDir + "/VFX_BombExplosion_Complete.prefab";
             var root = new GameObject("VFX_BombExplosion_Complete");
 
-            // 1. Lõi chớp sáng HDR cực mạnh kích thích URP Bloom
+            // 1. Lõi chớp sáng gọn tại tâm vụ nổ (tránh bết trắng cả khung hình)
             var coreGo = new GameObject("Explosion_FlashCore");
             coreGo.transform.SetParent(root.transform, false);
             coreGo.transform.localPosition = new Vector3(0f, 0.45f, 0f);
             var psCore = coreGo.AddComponent<ParticleSystem>();
             var mCore = psCore.main;
-            mCore.duration = 0.5f;
+            mCore.duration = 0.3f;
             mCore.loop = false;
-            mCore.startLifetime = new ParticleSystem.MinMaxCurve(0.18f, 0.30f);
+            mCore.startLifetime = new ParticleSystem.MinMaxCurve(0.10f, 0.18f);
             mCore.startSpeed = 0f;
-            mCore.startSize = new ParticleSystem.MinMaxCurve(3.4f, 4.4f);
-            mCore.startColor = new ParticleSystem.MinMaxGradient(new Color(4.5f, 2.4f, 0.85f, 1f));
+            mCore.startSize = new ParticleSystem.MinMaxCurve(1.8f, 2.5f);
+            mCore.startColor = new ParticleSystem.MinMaxGradient(new Color(2.2f, 1.05f, 0.25f, 0.95f));
             var eCore = psCore.emission;
             eCore.rateOverTime = 0f;
-            eCore.SetBursts(new[] { new ParticleSystem.Burst(0f, 3) });
+            eCore.SetBursts(new[] { new ParticleSystem.Burst(0f, 2) });
             var solCore = psCore.sizeOverLifetime;
             solCore.enabled = true;
-            solCore.size = new ParticleSystem.MinMaxCurve(1f, AnimationCurve.EaseInOut(0f, 0.45f, 1f, 1.35f));
+            solCore.size = new ParticleSystem.MinMaxCurve(1f, AnimationCurve.EaseInOut(0f, 0.6f, 1f, 1.25f));
             var colCore = psCore.colorOverLifetime;
             colCore.enabled = true;
             var gCore = new Gradient();
             gCore.SetKeys(
-                new[] { new GradientColorKey(new Color(1f, 0.95f, 0.75f), 0f), new GradientColorKey(new Color(1f, 0.45f, 0.08f), 1f) },
-                new[] { new GradientAlphaKey(1f, 0f), new GradientAlphaKey(0.8f, 0.4f), new GradientAlphaKey(0f, 1f) }
+                new[] { new GradientColorKey(new Color(1f, 0.9f, 0.45f), 0f), new GradientColorKey(new Color(1f, 0.35f, 0.04f), 1f) },
+                new[] { new GradientAlphaKey(0.95f, 0f), new GradientAlphaKey(0.55f, 0.4f), new GradientAlphaKey(0f, 1f) }
             );
             colCore.color = gCore;
             var psrCore = coreGo.GetComponent<ParticleSystemRenderer>();
             if (psrCore != null && flameMat != null) psrCore.sharedMaterial = flameMat;
 
-            // 2. Cầu lửa bom bùng nổ bung rộng
+            // 2. Vùng lửa bom bùng phát mạnh ở trung tâm (cuộn ngọn lửa WispySmoke HDR cam vàng đỏ)
             var fireGo = new GameObject("Explosion_Fireball");
             fireGo.transform.SetParent(root.transform, false);
-            fireGo.transform.localPosition = new Vector3(0f, 0.4f, 0f);
+            fireGo.transform.localPosition = new Vector3(0f, 0.35f, 0f);
+            fireGo.transform.localRotation = Quaternion.Euler(-90f, 0f, 0f);
             var psFire = fireGo.AddComponent<ParticleSystem>();
             var mFire = psFire.main;
             mFire.duration = 1.0f;
             mFire.loop = false;
-            mFire.startLifetime = new ParticleSystem.MinMaxCurve(0.40f, 0.75f);
-            mFire.startSpeed = new ParticleSystem.MinMaxCurve(3.5f, 8.5f);
-            mFire.startSize = new ParticleSystem.MinMaxCurve(1.4f, 2.6f);
-            mFire.startColor = new ParticleSystem.MinMaxGradient(new Color(3.2f, 1.15f, 0.18f, 0.95f));
-            mFire.gravityModifier = -0.35f;
+            mFire.startLifetime = new ParticleSystem.MinMaxCurve(0.45f, 0.85f);
+            mFire.startSpeed = new ParticleSystem.MinMaxCurve(1.4f, 4.4f);
+            mFire.startSize = new ParticleSystem.MinMaxCurve(1.85f, 3.2f);
+            mFire.startColor = new ParticleSystem.MinMaxGradient(new Color(2.4f, 0.95f, 0.16f, 0.96f));
+            mFire.gravityModifier = -0.55f;
             mFire.simulationSpace = ParticleSystemSimulationSpace.World;
             var eFire = psFire.emission;
             eFire.rateOverTime = 0f;
-            eFire.SetBursts(new[] { new ParticleSystem.Burst(0f, 26) });
+            eFire.SetBursts(new[] {
+                new ParticleSystem.Burst(0.0f, 32),
+                new ParticleSystem.Burst(0.08f, 20)
+            });
             var sFire = psFire.shape;
-            sFire.shapeType = ParticleSystemShapeType.Hemisphere;
-            sFire.radius = 0.45f;
+            sFire.shapeType = ParticleSystemShapeType.Cone;
+            sFire.angle = 36f;
+            sFire.radius = 0.42f;
             var solFire = psFire.sizeOverLifetime;
             solFire.enabled = true;
-            solFire.size = new ParticleSystem.MinMaxCurve(1f, AnimationCurve.Linear(0f, 0.7f, 1f, 1.85f));
+            solFire.size = new ParticleSystem.MinMaxCurve(1f, AnimationCurve.Linear(0f, 0.65f, 1f, 1.45f));
             var colFire = psFire.colorOverLifetime;
             colFire.enabled = true;
             var gFire = new Gradient();
             gFire.SetKeys(
                 new[] {
-                    new GradientColorKey(new Color(1f, 0.8f, 0.25f), 0f),
-                    new GradientColorKey(new Color(1f, 0.28f, 0.04f), 0.55f),
-                    new GradientColorKey(new Color(0.25f, 0.05f, 0.02f), 1f)
+                    new GradientColorKey(new Color(1f, 0.88f, 0.32f), 0f),
+                    new GradientColorKey(new Color(1f, 0.32f, 0.04f), 0.48f),
+                    new GradientColorKey(new Color(0.55f, 0.08f, 0.01f), 1f)
                 },
-                new[] { new GradientAlphaKey(0.95f, 0f), new GradientAlphaKey(0.7f, 0.45f), new GradientAlphaKey(0f, 1f) }
+                new[] { new GradientAlphaKey(0.95f, 0f), new GradientAlphaKey(0.8f, 0.45f), new GradientAlphaKey(0f, 1f) }
             );
             colFire.color = gFire;
             EnableSmokeSpritesheet8x8(psFire);
             var psrFire = fireGo.GetComponent<ParticleSystemRenderer>();
-            if (psrFire != null && flameMat != null) psrFire.sharedMaterial = flameMat;
+            if (psrFire != null && firePlumeMat != null) psrFire.sharedMaterial = firePlumeMat;
 
-            // 3. Cột khói đen bom đặc quánh cuộn ra sau vụ nổ
+            // 3. Cột khói đen đặc quánh bốc cao từ trung tâm bom nổ (dùng WispySmoke03b_8x8 Alpha blend)
             var smokeGo = new GameObject("Explosion_BlackSmoke");
             smokeGo.transform.SetParent(root.transform, false);
             smokeGo.transform.localPosition = new Vector3(0f, 0.35f, 0f);
@@ -631,35 +716,40 @@ namespace Aiara.EditorTools
             mSmoke.duration = 2.6f;
             mSmoke.loop = false;
             mSmoke.startLifetime = new ParticleSystem.MinMaxCurve(1.4f, 2.5f);
-            mSmoke.startSpeed = new ParticleSystem.MinMaxCurve(2.4f, 6.8f);
-            mSmoke.startSize = new ParticleSystem.MinMaxCurve(1.8f, 3.6f);
-            mSmoke.startColor = new Color(0.04f, 0.04f, 0.05f, 0.96f);
-            mSmoke.gravityModifier = -0.22f;
+            mSmoke.startSpeed = new ParticleSystem.MinMaxCurve(1.8f, 5.2f);
+            mSmoke.startSize = new ParticleSystem.MinMaxCurve(2.0f, 3.8f);
+            mSmoke.startColor = new Color(0.05f, 0.05f, 0.06f, 0.98f);
+            mSmoke.gravityModifier = -0.42f;
             mSmoke.simulationSpace = ParticleSystemSimulationSpace.World;
             var eSmoke = psSmoke.emission;
             eSmoke.rateOverTime = 0f;
             eSmoke.SetBursts(new[] {
-                new ParticleSystem.Burst(0.0f, 36),
-                new ParticleSystem.Burst(0.12f, 24)
+                new ParticleSystem.Burst(0.0f, 38),
+                new ParticleSystem.Burst(0.10f, 28),
+                new ParticleSystem.Burst(0.24f, 20)
             });
             var sSmoke = psSmoke.shape;
             sSmoke.shapeType = ParticleSystemShapeType.Cone;
-            sSmoke.angle = 65f;
-            sSmoke.radius = 0.7f;
+            sSmoke.angle = 44f;
+            sSmoke.radius = 0.55f;
             var solSmoke = psSmoke.sizeOverLifetime;
             solSmoke.enabled = true;
-            solSmoke.size = new ParticleSystem.MinMaxCurve(1f, AnimationCurve.Linear(0f, 0.8f, 1f, 2.5f));
+            solSmoke.size = new ParticleSystem.MinMaxCurve(1f, AnimationCurve.Linear(0f, 0.75f, 1f, 2.15f));
             var colSmoke = psSmoke.colorOverLifetime;
             colSmoke.enabled = true;
             var gSmoke = new Gradient();
             gSmoke.SetKeys(
-                new[] { new GradientColorKey(new Color(0.12f, 0.1f, 0.1f), 0f), new GradientColorKey(new Color(0.02f, 0.02f, 0.02f), 1f) },
-                new[] { new GradientAlphaKey(0.9f, 0f), new GradientAlphaKey(0.75f, 0.55f), new GradientAlphaKey(0f, 1f) }
+                new[] { new GradientColorKey(new Color(0.08f, 0.07f, 0.07f), 0f), new GradientColorKey(new Color(0.02f, 0.02f, 0.02f), 1f) },
+                new[] { new GradientAlphaKey(0.92f, 0f), new GradientAlphaKey(0.85f, 0.55f), new GradientAlphaKey(0f, 1f) }
             );
             colSmoke.color = gSmoke;
             EnableSmokeSpritesheet8x8(psSmoke);
             var psrSmoke = smokeGo.GetComponent<ParticleSystemRenderer>();
-            if (psrSmoke != null && smokeMat != null) psrSmoke.sharedMaterial = smokeMat;
+            if (psrSmoke != null && smokeMat != null)
+            {
+                psrSmoke.sharedMaterial = smokeMat;
+                psrSmoke.sortingFudge = 0.8f;
+            }
 
             // 4. Vòng sóng lửa lan sát mặt đất
             var waveGo = new GameObject("Explosion_ShockwaveRing");

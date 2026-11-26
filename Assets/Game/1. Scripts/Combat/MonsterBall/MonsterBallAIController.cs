@@ -85,6 +85,11 @@ namespace Aiara.Combat
         private float _lastHitTime = 0f;
         private bool _hasAttackedInCurrentState = false;
         private float _currentRollDir = -1f;
+        private float _rollWindupDuration = 0.22f;
+        private bool _rollChargeStarted = false;
+        private float _jumpWindupDuration = 0.28f;
+        private bool _jumpLaunchStarted = false;
+        private float _jumpWindupDir = 1f;
         private Vector3 _jumpStartPos;
         private Vector3 _jumpTargetPos;
         private string _currentAnimState;
@@ -95,6 +100,8 @@ namespace Aiara.Combat
         private GameObject _groundCrackInstance;
         private GameObject _rollTrailInstance;
         private GameObject _jumpTrailInstance;
+        private Coroutine _deathExplosionCoroutine;
+        private System.Collections.Generic.List<(Transform t, Vector3 pos, Quaternion rot)> _chunkRestPose;
 
         public bool IsAIEnabled
         {
@@ -103,6 +110,9 @@ namespace Aiara.Combat
         }
 
         public MonsterAIState CurrentState => _currentState;
+        public int ImpactExplosionsTriggered { get; private set; }
+        public bool IsRollTrailPlaying => _rollTrailInstance != null && _rollTrailInstance.activeSelf && _rollTrailInstance.GetComponentInChildren<ParticleSystem>() is ParticleSystem ps && ps.isEmitting;
+        public bool IsJumpTrailPlaying => _jumpTrailInstance != null && _jumpTrailInstance.activeSelf && _jumpTrailInstance.GetComponentInChildren<ParticleSystem>() is ParticleSystem ps && ps.isEmitting;
 
         private void Awake()
         {
@@ -173,8 +183,44 @@ namespace Aiara.Combat
             var g1 = transform.Find("group1");
             if (g1 != null)
             {
+                if (_chunkRestPose == null)
+                {
+                    _chunkRestPose = new System.Collections.Generic.List<(Transform, Vector3, Quaternion)>();
+                    foreach (Transform child in g1.GetComponentsInChildren<Transform>(true))
+                    {
+                        if (child == g1) continue;
+                        _chunkRestPose.Add((child, child.localPosition, child.localRotation));
+                    }
+                }
+                if (!active && _chunkRestPose != null)
+                {
+                    foreach (var item in _chunkRestPose)
+                    {
+                        if (item.t != null)
+                        {
+                            item.t.localPosition = item.pos;
+                            item.t.localRotation = item.rot;
+                        }
+                    }
+                }
                 g1.gameObject.SetActive(active);
             }
+        }
+
+        private void RestoreAliveVisuals()
+        {
+            if (_deathExplosionCoroutine != null)
+            {
+                StopCoroutine(_deathExplosionCoroutine);
+                _deathExplosionCoroutine = null;
+            }
+            if (_meshVisualRoot != null)
+            {
+                _meshVisualRoot.gameObject.SetActive(true);
+                _meshVisualRoot.localRotation = Quaternion.identity;
+            }
+            if (_collider != null) _collider.enabled = true;
+            SetFractureChunksActive(false);
         }
 
         private void SetupPhysics()
@@ -299,16 +345,16 @@ namespace Aiara.Combat
         public void SpawnAtDefaultPosition()
         {
             CleanupUnwantedArtifacts();
-            SetFractureChunksActive(false);
+            RestoreAliveVisuals();
             _currentAnimState = null;
             _attackCooldownTimer = 0f;
             _rollCooldownTimer = 0f;
             _jumpSlamCooldownTimer = 1.5f;
 
             // Khởi tạo trạng thái ẨN DƯỚI LÒNG ĐẤT:
-            // Y = 0.0m - (-0.08m) = +0.08m kết hợp anim Burrow trên Group -> chỉ đúng 2 chỏm gai trắng nhô lên mặt sàn ~10cm
+            // Y = 0.0m - (-0.08m) = +0.08m kết hợp anim Burrow trên Group -> mặt hướng ra màn hình (-Z) nghiêng nhẹ về phía Player
             transform.position = new Vector3(_groundSpawnPos.x, _groundSpawnPos.y - _submergeDepth, 0f);
-            transform.rotation = Quaternion.Euler(0f, 270f, 0f);
+            transform.rotation = Quaternion.Euler(0f, 205f, 0f);
 
             if (_meshVisualRoot != null)
             {
@@ -348,6 +394,78 @@ namespace Aiara.Combat
             SpawnAtDefaultPosition();
             _consecutiveHitCount = 0;
             Debug.Log("[MonsterBallAI] MonsterBall đã được Reset về trạng thái xuất phát!");
+        }
+
+        public void SpawnAndEmerge(bool startActiveImmediately = false)
+        {
+            if (_health != null && _health.IsDead)
+            {
+                _health.ResetHealth();
+            }
+
+            if (_currentState == MonsterAIState.Hidden || startActiveImmediately)
+            {
+                CleanupUnwantedArtifacts();
+                RestoreAliveVisuals();
+                _currentAnimState = null;
+                transform.position = new Vector3(_groundSpawnPos.x, _groundSpawnPos.y - _submergeDepth, 0f);
+                if (_meshVisualRoot != null) _meshVisualRoot.localRotation = Quaternion.identity;
+                TransitionTo(MonsterAIState.Emerge);
+                return;
+            }
+
+            SpawnAtDefaultPosition();
+        }
+
+        public void TriggerDemoAction(MonsterAIState actionState)
+        {
+            FindPlayerTarget();
+
+            if (_health != null && _health.IsDead)
+            {
+                _health.ResetHealth();
+            }
+
+            CleanupUnwantedArtifacts();
+            RestoreAliveVisuals();
+            if (_meshVisualRoot != null)
+            {
+                _meshVisualRoot.localRotation = Quaternion.identity;
+            }
+
+            if (actionState == MonsterAIState.Hidden || actionState == MonsterAIState.Emerge)
+            {
+                transform.position = new Vector3(_groundSpawnPos.x, _groundSpawnPos.y - _submergeDepth, 0f);
+                TransitionTo(actionState);
+                return;
+            }
+
+            if (transform.position.y < _groundY || _currentState == MonsterAIState.Hidden)
+            {
+                transform.position = new Vector3(transform.position.x, _groundY, 0f);
+            }
+
+            SetBodyFlameActive(true);
+            SetWorldHpBarVisible(true);
+
+            if ((actionState == MonsterAIState.Attack1 || actionState == MonsterAIState.Attack2) && _targetPlayer != null)
+            {
+                float dist = Mathf.Abs(transform.position.x - _targetPlayer.position.x);
+                if (dist > _meleeAttackRange + 0.5f)
+                {
+                    float side = Mathf.Sign(transform.position.x - _targetPlayer.position.x);
+                    if (Mathf.Abs(side) < 0.1f) side = 1f;
+                    transform.position = new Vector3(Mathf.Clamp(_targetPlayer.position.x + side * 1.75f, -9.5f, 9.5f), _groundY, 0f);
+                }
+            }
+
+            AutoFaceTarget();
+            if (actionState == MonsterAIState.Dead && _health != null)
+            {
+                _health.TakeDamage(_health.MaxHp);
+                return;
+            }
+            TransitionTo(actionState);
         }
 
         public void SetBodyFlameActive(bool active)
@@ -411,7 +529,7 @@ namespace Aiara.Combat
             }
         }
 
-        private void SetRollTrailActive(bool active)
+        private void SetRollTrailActive(bool active, bool immediateClear = false)
         {
             if (active)
             {
@@ -428,18 +546,18 @@ namespace Aiara.Combat
                     foreach (var ps in psList) ps.Play();
                 }
             }
-            else
+            else if (_rollTrailInstance != null)
             {
-                if (_rollTrailInstance != null)
-                {
-                    var psList = _rollTrailInstance.GetComponentsInChildren<ParticleSystem>(true);
-                    foreach (var ps in psList) ps.Stop();
-                    _rollTrailInstance.SetActive(false);
-                }
+                var psList = _rollTrailInstance.GetComponentsInChildren<ParticleSystem>(true);
+                var behavior = immediateClear
+                    ? ParticleSystemStopBehavior.StopEmittingAndClear
+                    : ParticleSystemStopBehavior.StopEmitting;
+                foreach (var ps in psList) ps.Stop(true, behavior);
+                if (immediateClear) _rollTrailInstance.SetActive(false);
             }
         }
 
-        private void SetJumpTrailActive(bool active)
+        private void SetJumpTrailActive(bool active, bool immediateClear = false)
         {
             if (active)
             {
@@ -458,16 +576,38 @@ namespace Aiara.Combat
                     }
                 }
             }
-            else
+            else if (_jumpTrailInstance != null)
             {
-                if (_jumpTrailInstance != null)
+                var behavior = immediateClear
+                    ? ParticleSystemStopBehavior.StopEmittingAndClear
+                    : ParticleSystemStopBehavior.StopEmitting;
+                foreach (var ps in _jumpTrailInstance.GetComponentsInChildren<ParticleSystem>(true))
                 {
-                    foreach (var ps in _jumpTrailInstance.GetComponentsInChildren<ParticleSystem>(true))
-                    {
-                        ps.Stop();
-                    }
+                    ps.Stop(true, behavior);
                 }
+                if (immediateClear) _jumpTrailInstance.SetActive(false);
             }
+        }
+
+        private Vector3 GetCollisionPointWithPlayer(float defaultY = 0.65f)
+        {
+            if (_targetPlayer == null) return new Vector3(transform.position.x, defaultY, 0f);
+            float midX = Mathf.Lerp(transform.position.x, _targetPlayer.position.x, 0.52f);
+            float hitY = Mathf.Max(defaultY, transform.position.y * 0.45f + 0.55f);
+            return new Vector3(midX, hitY, 0f);
+        }
+
+        private void SpawnImpactFireExplosion(Vector3 impactPoint, float scale, float sfxVolume, float postProcessIntensity)
+        {
+            if (_bombExplosionPrefab != null)
+            {
+                var boom = Instantiate(_bombExplosionPrefab, impactPoint, Quaternion.identity);
+                boom.transform.localScale = Vector3.one * scale;
+                Destroy(boom, 3.2f);
+            }
+            ImpactExplosionsTriggered++;
+            CombatPostProcessController.TriggerExplosion(postProcessIntensity);
+            PlaySfx(_sfxBombExplosion, sfxVolume);
         }
 
         private void SetWorldHpBarVisible(bool visible)
@@ -657,41 +797,75 @@ namespace Aiara.Combat
 
             AutoFaceTarget();
 
-            // Chờ 0.4s để hiệu ứng bốc cháy và thanh máu hiển thị trọn vẹn trước khi Roll
+            // Chờ 0.4s để hiệu ứng bốc cháy và thanh máu hiển thị trọn vẹn; nếu AI đang tắt thì đứng CombatIdle chờ demo
             if (_stateTimer >= 0.4f)
             {
-                TransitionTo(MonsterAIState.RollAttack);
+                TransitionTo(_aiEnabled ? MonsterAIState.RollAttack : MonsterAIState.CombatIdle);
             }
         }
 
         private void ProcessRollAttackState()
         {
-            // Giữ vững cao độ Y = 0.0m; dùng animation Attack1 (xoay 360° quanh tâm Root_M) thay vì xoay pivot ở đáy khiến quái cắm đầu xuống đất
-            var p = transform.position;
-            p.y = _groundY;
-            transform.position = p;
-
             if (_targetPlayer == null) FindPlayerTarget();
 
-            // Di chuyển cuộn tròn tốc độ cao dọc trục X
-            transform.position += new Vector3(_currentRollDir * _rollSpeed * Time.deltaTime, 0f, 0f);
+            // Pha 1: Lấy đà / bật lùi tạo khoảng cách nếu đang đứng sát Player
+            if (_stateTimer < _rollWindupDuration)
+            {
+                float curY = _groundY;
+                if (_targetPlayer != null)
+                {
+                    float distToPlayer = Mathf.Abs(transform.position.x - _targetPlayer.position.x);
+                    if (distToPlayer < 3.8f)
+                    {
+                        float backDir = Mathf.Sign(transform.position.x - _targetPlayer.position.x);
+                        if (Mathf.Abs(backDir) < 0.1f) backDir = 1f;
+                        float nextX = Mathf.Clamp(transform.position.x + backDir * 11.5f * Time.deltaTime, -9.5f, 9.5f);
+                        float hopT = Mathf.Clamp01(_stateTimer / _rollWindupDuration);
+                        curY = _groundY + Mathf.Sin(hopT * Mathf.PI) * 0.45f;
+                        transform.position = new Vector3(nextX, curY, 0f);
+                    }
+                }
+                AutoFaceTarget();
+                return;
+            }
+
+            if (!_rollChargeStarted)
+            {
+                _rollChargeStarted = true;
+                if (_targetPlayer != null)
+                {
+                    _currentRollDir = Mathf.Sign(_targetPlayer.position.x - transform.position.x);
+                    if (Mathf.Abs(_currentRollDir) < 0.1f) _currentRollDir = -1f;
+                }
+                AutoFaceTarget();
+                if (_animator != null) _animator.speed = 3.2f;
+                PlaySfx(_sfxRoll, 0.9f);
+            }
+
+            // Pha 2: Xoay tít mù (3.2x vòng/s quanh Root_M) + phóng vòng cung thấp lao tốc độ cao vào Player
+            float chargeElapsed = _stateTimer - _rollWindupDuration;
+            float arcT = Mathf.Clamp01(chargeElapsed / 0.52f);
+            float chargeY = _groundY + Mathf.Sin(arcT * Mathf.PI) * 1.15f;
+            float speed = Mathf.Max(_rollSpeed, 13.5f);
+            float movedX = Mathf.Clamp(transform.position.x + _currentRollDir * speed * Time.deltaTime, -10f, 10f);
+            transform.position = new Vector3(movedX, chargeY, 0f);
 
             // Kiểm tra va chạm với JangHyu
             if (_targetPlayer != null)
             {
                 float dist = Mathf.Abs(transform.position.x - _targetPlayer.position.x);
-                if (dist <= 1.4f)
+                if (dist <= 1.5f)
                 {
-                    // Đâm trúng JangHyu!
+                    transform.position = new Vector3(transform.position.x, _groundY, 0f);
                     ApplyRollHitToPlayer();
                     TransitionTo(MonsterAIState.Recover);
                     return;
                 }
             }
 
-            // Timeout sau 1.8s hoặc đi quá xa mà không trúng
-            if (_stateTimer >= 1.8f)
+            if (chargeElapsed >= 1.4f)
             {
+                transform.position = new Vector3(transform.position.x, _groundY, 0f);
                 _rollCooldownTimer = 4.5f;
                 TransitionTo(MonsterAIState.Recover);
             }
@@ -710,33 +884,69 @@ namespace Aiara.Combat
             // Thiêu đốt bốc cháy người chơi trong 3 giây
             receiver.ApplyBurn(3.0f, 0.4f, 1, _flameVfxPrefab);
 
-            // Hất văng ngã ngửa và khóa di chuyển suốt thời gian Knockdown -> StandUp
-            receiver.ApplyKnockback(new Vector3(_currentRollDir * 5.0f, 3.5f, 0f), 3.0f, true);
+            // Vụ nổ lửa bùng phát ngay tại điểm va chạm giữa MonsterBall và JangHyu
+            SpawnImpactFireExplosion(GetCollisionPointWithPlayer(0.62f), 0.9f, 0.85f, 0.72f);
+
+            // Húc văng mạnh Player lùi về sau 3.5-4.5m và khóa di chuyển suốt thời gian Knockdown -> StandUp
+            receiver.ApplyKnockback(new Vector3(_currentRollDir * 10.5f, 4.4f, 0f), 3.0f, true);
             _rollCooldownTimer = 4.5f;
 
-            StreetFighterCamera.TriggerShake(0.32f, 0.28f, 2.5f);
-            CombatPostProcessController.TriggerHit(0.55f);
-            PlaySfx(_sfxHitImpact, 0.9f);
+            StreetFighterCamera.TriggerShake(0.35f, 0.32f, 3.0f);
+            PlaySfx(_sfxHitImpact, 0.95f);
 
-            Debug.Log("[MonsterBallAI] ROLL ATTACK ĐÂM TRÚNG JANGHYU! Gây 25 sát thương + Thiêu đốt ngọn lửa!");
+            Debug.Log("[MonsterBallAI] ROLL ATTACK ĐÂM TRÚNG JANGHYU! Húc văng lùi về sau + Gây 25 sát thương + Thiêu đốt!");
         }
 
         private void ProcessJumpSlamState()
         {
-            const float jumpDuration = 0.80f;
-            float t = Mathf.Clamp01(_stateTimer / jumpDuration);
+            if (_targetPlayer == null) FindPlayerTarget();
+
+            // Pha 1: Lùi về sau lấy đà trước khi nhảy bổng lên không
+            if (_stateTimer < _jumpWindupDuration)
+            {
+                float backSpeed = 7.0f;
+                if (_targetPlayer != null && Mathf.Abs(transform.position.x - _targetPlayer.position.x) < 3.0f)
+                {
+                    backSpeed = 9.0f;
+                }
+                float backX = Mathf.Clamp(transform.position.x + _jumpWindupDir * backSpeed * Time.deltaTime, -9.5f, 9.5f);
+                transform.position = new Vector3(backX, _groundY, 0f);
+                AutoFaceTarget();
+                return;
+            }
+
+            // Pha 2: Khởi động cú bật nhảy bổng lên không trung
+            if (!_jumpLaunchStarted)
+            {
+                _jumpLaunchStarted = true;
+                SetRollTrailActive(false);
+                SetJumpTrailActive(true);
+                _jumpStartPos = new Vector3(transform.position.x, _groundY, 0f);
+                if (_targetPlayer != null)
+                {
+                    float dx = Mathf.Clamp(_targetPlayer.position.x - _jumpStartPos.x, -7.5f, 7.5f);
+                    _jumpTargetPos = new Vector3(Mathf.Clamp(_jumpStartPos.x + dx, -9.5f, 9.5f), _groundY, 0f);
+                }
+                else
+                {
+                    _jumpTargetPos = _jumpStartPos + new Vector3(-2.5f, 0f, 0f);
+                }
+                AutoFaceTarget();
+                PlaySfx(_sfxJump, 0.95f);
+                PlayAnimation("Unburrow", true);
+            }
+
+            const float jumpDuration = 0.78f;
+            float flyElapsed = _stateTimer - _jumpWindupDuration;
+            float t = Mathf.Clamp01(flyElapsed / jumpDuration);
 
             // Quỹ đạo parabol nhảy bổng lên 2.45m (gọn trong khung hình camera) rồi lao thẳng xuống đập trúng người chơi
             float curX = Mathf.Lerp(_jumpStartPos.x, _jumpTargetPos.x, t);
             float curY = _groundY + Mathf.Sin(t * Mathf.PI) * 2.45f;
             transform.position = new Vector3(curX, curY, 0f);
+            AutoFaceTarget();
 
-            if (_meshVisualRoot != null)
-            {
-                _meshVisualRoot.Rotate(Vector3.right, -640f * Time.deltaTime, Space.Self);
-            }
-
-            if (_stateTimer >= jumpDuration)
+            if (flyElapsed >= jumpDuration)
             {
                 transform.position = new Vector3(_jumpTargetPos.x, _groundY, 0f);
                 if (_meshVisualRoot != null)
@@ -754,20 +964,17 @@ namespace Aiara.Combat
 
         private void TriggerBombExplosionImpact()
         {
-            if (_bombExplosionPrefab != null)
-            {
-                var boom = Instantiate(_bombExplosionPrefab, new Vector3(transform.position.x, 0.08f, 0f), Quaternion.identity);
-                Destroy(boom, 3.5f);
-            }
+            float distToPlayer = _targetPlayer != null ? Mathf.Abs(transform.position.x - _targetPlayer.position.x) : 999f;
+            bool hitsPlayer = _targetPlayer != null && distToPlayer <= 2.9f;
+            Vector3 impactPos = hitsPlayer
+                ? GetCollisionPointWithPlayer(0.22f)
+                : new Vector3(transform.position.x, 0.08f, 0f);
 
-            // Rung lắc màn hình + chớp sáng/lệch sắc Post-Processing + âm thanh nổ bom
+            // Nổ bom lửa + khói đen + Post-Processing + âm thanh tại điểm va chạm
+            SpawnImpactFireExplosion(impactPos, 1.1f, 1.0f, 1.05f);
             StreetFighterCamera.TriggerShake(0.45f, 0.42f, 4.5f);
-            CombatPostProcessController.TriggerExplosion(1.05f);
-            PlaySfx(_sfxBombExplosion, 1.0f);
 
-            if (_targetPlayer == null) return;
-            float dist = Mathf.Abs(transform.position.x - _targetPlayer.position.x);
-            if (dist <= 2.9f)
+            if (hitsPlayer)
             {
                 var receiver = _playerBurnReceiver != null ? _playerBurnReceiver : _targetPlayer.GetComponent<JangHyuBurnReceiver>();
                 if (receiver != null && !receiver.IsDead)
@@ -777,7 +984,7 @@ namespace Aiara.Combat
 
                     receiver.TakeDirectDamage(30);
                     receiver.ApplyBurn(3.5f, 0.4f, 1, _flameVfxPrefab);
-                    receiver.ApplyKnockback(new Vector3(hitDir * 6.5f, 4.5f, 0f), 3.0f, true);
+                    receiver.ApplyKnockback(new Vector3(hitDir * 9.5f, 4.8f, 0f), 3.0f, true);
                 }
             }
 
@@ -809,7 +1016,8 @@ namespace Aiara.Combat
             float dirX = _targetPlayer.position.x - transform.position.x;
             if (Mathf.Abs(dirX) > 0.15f)
             {
-                float targetY = dirX > 0 ? 90f : 270f;
+                // Quay mặt (+Z local) hướng ra ngoài màn hình (-Z) và nghiêng 25° về phía Player để luôn nhìn rõ mặt & đồng bộ animation
+                float targetY = dirX > 0 ? 155f : 205f;
                 transform.rotation = Quaternion.Euler(0f, targetY, 0f);
             }
         }
@@ -963,16 +1171,16 @@ namespace Aiara.Combat
                 {
                     receiver.TakeDirectDamage(15);
                     receiver.ApplyBurn(3.0f, 0.4f, 1, _flameVfxPrefab);
+                    SpawnImpactFireExplosion(GetCollisionPointWithPlayer(0.65f), 0.72f, 0.65f, 0.45f);
 
                     float hitDir = Mathf.Sign(_targetPlayer.position.x - transform.position.x);
                     if (Mathf.Abs(hitDir) < 0.1f) hitDir = -1f;
                     bool shouldKnockdown = _currentState == MonsterAIState.Attack1;
                     receiver.ApplyKnockback(
-                        new Vector3(hitDir * (shouldKnockdown ? 4.2f : 2.5f), shouldKnockdown ? 2.5f : 0.8f, 0f),
+                        new Vector3(hitDir * (shouldKnockdown ? 7.5f : 3.8f), shouldKnockdown ? 3.2f : 1.2f, 0f),
                         shouldKnockdown ? 3.0f : 0.6f,
                         shouldKnockdown);
                     StreetFighterCamera.TriggerShake(0.18f, 0.16f, 1.5f);
-                    CombatPostProcessController.TriggerHit(0.35f);
                     PlaySfx(_sfxHitImpact, 0.75f);
                 }
 
@@ -985,14 +1193,15 @@ namespace Aiara.Combat
             _currentState = newState;
             _stateTimer = 0f;
             _hasAttackedInCurrentState = false;
+            if (_animator != null) _animator.speed = 1f;
 
             switch (newState)
             {
                 case MonsterAIState.Hidden:
                     SetFractureChunksActive(false);
                     SetBodyFlameActive(false);
-                    SetRollTrailActive(false);
-                    SetJumpTrailActive(false);
+                    SetRollTrailActive(false, immediateClear: true);
+                    SetJumpTrailActive(false, immediateClear: true);
                     SetGroundCrackActive(true);
                     SetWorldHpBarVisible(false);
                     PlayAnimation("Burrow");
@@ -1002,6 +1211,8 @@ namespace Aiara.Combat
                     SetFractureChunksActive(false);
                     SetGroundCrackActive(false);
                     SetBodyFlameActive(true);
+                    SetRollTrailActive(true);
+                    SetJumpTrailActive(true);
                     StreetFighterCamera.TriggerShake(0.24f, 0.24f, 2.0f);
                     PlaySfx(_sfxEmerge, 0.9f);
                     // Sinh vụ nổ khói đất đá phun trào từ lòng đất
@@ -1015,6 +1226,8 @@ namespace Aiara.Combat
 
                 case MonsterAIState.LandIgnite:
                     SetBodyFlameActive(true);
+                    SetRollTrailActive(false);
+                    SetJumpTrailActive(false);
                     SetWorldHpBarVisible(true);
                     AutoFaceTarget();
                     PlayAnimation("BattleIdle");
@@ -1022,40 +1235,40 @@ namespace Aiara.Combat
 
                 case MonsterAIState.RollAttack:
                     SetRollTrailActive(true);
+                    SetJumpTrailActive(true);
+                    _rollChargeStarted = false;
+                    float curDist = _targetPlayer != null ? Mathf.Abs(transform.position.x - _targetPlayer.position.x) : 4.5f;
+                    _rollWindupDuration = curDist < 3.6f ? 0.28f : 0.16f;
                     if (_targetPlayer != null)
                     {
                         _currentRollDir = Mathf.Sign(_targetPlayer.position.x - transform.position.x);
+                        if (Mathf.Abs(_currentRollDir) < 0.1f) _currentRollDir = -1f;
                     }
                     else
                     {
                         _currentRollDir = -1f;
                     }
                     AutoFaceTarget();
-                    PlaySfx(_sfxRoll, 0.8f);
+                    if (_animator != null) _animator.speed = 2.6f;
+                    PlaySfx(_sfxRoll, 0.85f);
                     PlayAnimation("Attack1", true);
                     break;
 
                 case MonsterAIState.JumpSlam:
-                    SetRollTrailActive(false);
+                    SetRollTrailActive(true);
                     SetBodyFlameActive(true);
                     SetJumpTrailActive(true);
-                    _jumpStartPos = new Vector3(transform.position.x, _groundY, 0f);
-                    if (_targetPlayer != null)
-                    {
-                        float dx = Mathf.Clamp(_targetPlayer.position.x - _jumpStartPos.x, -6.5f, 6.5f);
-                        _jumpTargetPos = new Vector3(Mathf.Clamp(_jumpStartPos.x + dx, -9.5f, 9.5f), _groundY, 0f);
-                    }
-                    else
-                    {
-                        _jumpTargetPos = _jumpStartPos + new Vector3(-2.5f, 0f, 0f);
-                    }
+                    _jumpLaunchStarted = false;
+                    _jumpWindupDuration = 0.28f;
+                    _jumpWindupDir = _targetPlayer != null ? Mathf.Sign(transform.position.x - _targetPlayer.position.x) : 1f;
+                    if (Mathf.Abs(_jumpWindupDir) < 0.1f) _jumpWindupDir = 1f;
                     AutoFaceTarget();
-                    PlaySfx(_sfxJump, 0.95f);
-                    PlayAnimation("Unburrow", true);
+                    PlayAnimation("WalkBackward", true);
                     break;
 
                 case MonsterAIState.Recover:
                     SetRollTrailActive(false);
+                    SetJumpTrailActive(false);
                     if (_meshVisualRoot != null)
                     {
                         _meshVisualRoot.localRotation = Quaternion.identity;
@@ -1065,6 +1278,7 @@ namespace Aiara.Combat
 
                 case MonsterAIState.CombatIdle:
                     SetRollTrailActive(false);
+                    SetJumpTrailActive(false);
                     if (_meshVisualRoot != null)
                     {
                         _meshVisualRoot.localRotation = Quaternion.identity;
@@ -1073,41 +1287,150 @@ namespace Aiara.Combat
                     break;
 
                 case MonsterAIState.Approach:
+                    SetRollTrailActive(true);
+                    SetJumpTrailActive(false);
                     PlayAnimation("BattleWalk");
                     break;
 
                 case MonsterAIState.KeepDistance:
+                    SetRollTrailActive(true);
+                    SetJumpTrailActive(false);
                     PlayAnimation("WalkBackward");
                     break;
 
                 case MonsterAIState.Attack1:
+                    SetRollTrailActive(false);
+                    SetJumpTrailActive(false);
                     AutoFaceTarget();
                     PlayAnimation("Attack1", true);
                     break;
 
                 case MonsterAIState.Attack2:
+                    SetRollTrailActive(false);
+                    SetJumpTrailActive(false);
                     AutoFaceTarget();
                     PlayAnimation("Attack2", true);
                     break;
 
                 case MonsterAIState.Damaged:
+                    SetRollTrailActive(false);
+                    SetJumpTrailActive(false);
                     PlayAnimation("DamagedForward", true);
                     break;
 
                 case MonsterAIState.Groggy:
+                    SetRollTrailActive(false);
+                    SetJumpTrailActive(false);
                     PlayAnimation("GroggyStart", true);
                     break;
 
                 case MonsterAIState.Dead:
-                    SetBodyFlameActive(false);
-                    SetRollTrailActive(false);
-                    PlayAnimation("DamagedBackward", true);
+                    TriggerDeathExplosionSequence();
                     break;
             }
         }
 
+        private void TriggerDeathExplosionSequence()
+        {
+            SetBodyFlameActive(false);
+            SetRollTrailActive(false, immediateClear: true);
+            SetJumpTrailActive(false, immediateClear: true);
+            SetGroundCrackActive(false);
+            SetWorldHpBarVisible(false);
+            if (_collider != null) _collider.enabled = false;
+
+            Vector3 boomPos = new Vector3(transform.position.x, Mathf.Max(0.15f, transform.position.y + 0.25f), 0f);
+            if (_bombExplosionPrefab != null)
+            {
+                var boom = Instantiate(_bombExplosionPrefab, boomPos, Quaternion.identity);
+                boom.transform.localScale = Vector3.one * 1.45f;
+                Destroy(boom, 4.0f);
+            }
+            if (_groundEruptPrefab != null)
+            {
+                var erupt = Instantiate(_groundEruptPrefab, new Vector3(transform.position.x, 0.05f, 0f), Quaternion.identity);
+                erupt.transform.localScale = Vector3.one * 1.25f;
+                Destroy(erupt, 3.2f);
+            }
+
+            StreetFighterCamera.TriggerShake(0.55f, 0.45f, 5.5f);
+            CombatPostProcessController.TriggerExplosion(0.95f);
+            PlaySfx(_sfxBombExplosion, 1.0f);
+
+            if (_meshVisualRoot != null)
+            {
+                _meshVisualRoot.gameObject.SetActive(false);
+            }
+            // Không bật group1 vì group1 là mesh thân nguyên vẹn; dùng mảnh vỡ debris rời bắn ra từ vùng lửa trung tâm
+            SetFractureChunksActive(false);
+
+            if (_deathExplosionCoroutine != null) StopCoroutine(_deathExplosionCoroutine);
+            _deathExplosionCoroutine = StartCoroutine(ExplodeFractureChunksRoutine());
+        }
+
+        private IEnumerator ExplodeFractureChunksRoutine()
+        {
+            var tempPieces = new System.Collections.Generic.List<(GameObject go, Vector3 vel, Vector3 ang)>();
+            Color[] colors =
+            {
+                new Color(0.58f, 0.07f, 0.07f, 1f),
+                new Color(0.22f, 0.09f, 0.08f, 1f),
+                new Color(0.88f, 0.84f, 0.74f, 1f),
+                new Color(0.12f, 0.42f, 0.52f, 1f)
+            };
+
+            Vector3 origin = transform.position + Vector3.up * 0.55f;
+            for (int i = 0; i < 24; i++)
+            {
+                var piece = GameObject.CreatePrimitive(i % 4 == 2 ? PrimitiveType.Capsule : PrimitiveType.Cube);
+                piece.name = "DeadDebrisChunk";
+                var col = piece.GetComponent<Collider>();
+                if (col != null) Destroy(col);
+                Vector3 dir = Random.onUnitSphere;
+                dir.y = Mathf.Abs(dir.y) * 0.85f + 0.35f;
+                dir.Normalize();
+                piece.transform.position = origin + dir * Random.Range(0.1f, 0.35f);
+                piece.transform.localScale = i % 4 == 2
+                    ? new Vector3(0.09f, 0.18f, 0.09f)
+                    : new Vector3(Random.Range(0.10f, 0.24f), Random.Range(0.08f, 0.18f), Random.Range(0.10f, 0.22f));
+                var mr = piece.GetComponent<MeshRenderer>();
+                if (mr != null && mr.material != null) mr.material.color = colors[i % colors.Length];
+                Vector3 vel = new Vector3(dir.x * Random.Range(6.5f, 12.0f), dir.y * Random.Range(5.0f, 11.0f), dir.z * Random.Range(2.5f, 6.0f));
+                tempPieces.Add((piece, vel, Random.insideUnitSphere * 680f));
+            }
+
+            float elapsed = 0f;
+            while (elapsed < 1.8f)
+            {
+                float dt = Time.deltaTime;
+                for (int i = 0; i < tempPieces.Count; i++)
+                {
+                    var tp = tempPieces[i];
+                    if (tp.go == null) continue;
+                    tp.vel.y -= 18f * dt;
+                    tp.go.transform.position += tp.vel * dt;
+                    if (tp.go.transform.position.y < 0.06f)
+                    {
+                        var p = tp.go.transform.position; p.y = 0.06f; tp.go.transform.position = p;
+                        tp.vel.x *= 0.82f; tp.vel.y = 0f;
+                    }
+                    tp.go.transform.Rotate(tp.ang * dt, Space.Self);
+                    tempPieces[i] = tp;
+                }
+                elapsed += dt;
+                yield return null;
+            }
+
+            foreach (var tp in tempPieces)
+            {
+                if (tp.go != null) Destroy(tp.go);
+            }
+            _deathExplosionCoroutine = null;
+        }
+
         private void HandleTakeDamage(int damage)
         {
+            if (_currentState == MonsterAIState.Dead) return;
             _lastHitTime = Time.time;
             _consecutiveHitCount++;
 

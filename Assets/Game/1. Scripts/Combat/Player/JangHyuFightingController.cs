@@ -115,9 +115,13 @@ namespace Aiara.Combat
 
                 if (_rigidbody != null && !_rigidbody.isKinematic)
                 {
-                    var v = _rigidbody.linearVelocity;
-                    v.x = Mathf.MoveTowards(v.x, 0f, Time.deltaTime * 12f);
-                    _rigidbody.linearVelocity = v;
+                    bool isFlying = _burnReceiver != null && _burnReceiver.IsKnockbackFlying;
+                    if (!isFlying)
+                    {
+                        var v = _rigidbody.linearVelocity;
+                        v.x = Mathf.MoveTowards(v.x, 0f, Time.deltaTime * 10f);
+                        _rigidbody.linearVelocity = v;
+                    }
                 }
 
                 if (_animator != null)
@@ -125,6 +129,14 @@ namespace Aiara.Combat
                     _animator.SetFloat("Speed", 0f);
                     _animator.SetBool("IsMoving", false);
                     _animator.SetBool("IsWalkingBackward", false);
+                    if (_burnReceiver != null && _burnReceiver.IsDead)
+                    {
+                        var curState = _animator.GetCurrentAnimatorStateInfo(0);
+                        if (!curState.IsName("Dead"))
+                        {
+                            _animator.Play("Dead", 0, 0f);
+                        }
+                    }
                 }
                 return;
             }
@@ -268,6 +280,7 @@ namespace Aiara.Combat
 
         private void ExecuteComboAttack()
         {
+            if (IsActionLocked()) return;
             _isAttacking = true;
             _lastAttackTime = Time.time;
             _comboStep = (_comboStep % 3) + 1;
@@ -292,6 +305,7 @@ namespace Aiara.Combat
 
         private void ExecuteKickAttack()
         {
+            if (IsActionLocked()) return;
             _isAttacking = true;
             _lastAttackTime = Time.time;
 
